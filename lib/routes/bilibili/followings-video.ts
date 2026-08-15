@@ -95,17 +95,20 @@ async function handler(ctx) {
             return {
                 title: card_data.title,
                 description: `${baseDescription}${commentsHtml}`,
-    
                 image,
-    
+            
                 media: image
                     ? {
+                          content: {
+                              url: image,
+                              type: 'image/jpeg',
+                          },
                           thumbnail: {
                               url: image,
                           },
                       }
                     : undefined,
-    
+            
                 pubDate: new Date(card_data.pubdate * 1000).toUTCString(),
                 link,
                 author: card.desc.user_profile.info.uname,
