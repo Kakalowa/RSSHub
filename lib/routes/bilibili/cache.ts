@@ -1,5 +1,4 @@
 import { load } from 'cheerio';
-import { JSDOM } from 'jsdom';
 import { RateLimiterMemory, RateLimiterQueue } from 'rate-limiter-flexible';
 
 import { config } from '@/config';
@@ -80,10 +79,8 @@ const getRenderData = (uid) => {
                 Cookie: cookie,
             },
         });
-        const dom = new JSDOM(response);
-        const document = dom.window.document;
-        const scriptElement = document.querySelector('#__RENDER_DATA__');
-        const innerText = scriptElement ? scriptElement.textContent || '{}' : '{}';
+        const $ = load(response);
+        const innerText = $('#__RENDER_DATA__').text() || '{}';
         const renderData = JSON.parse(decodeURIComponent(innerText));
         const accessId = renderData.access_id;
         return accessId;
@@ -93,11 +90,9 @@ const getRenderData = (uid) => {
 const getWbiVerifyString = () => {
     const key = 'bili-wbi-verify-string';
     return cache.tryGet(key, async () => {
-        const cookie = await getCookie();
         const { data: navResponse } = await got('https://api.bilibili.com/x/web-interface/nav', {
             headers: {
                 Referer: 'https://www.bilibili.com/',
-                Cookie: cookie,
             },
         });
         const imgUrl = navResponse.data.wbi_img.img_url;
