@@ -6,7 +6,6 @@ import { config } from '@/config';
 import cache from '@/utils/cache';
 import got from '@/utils/got';
 import logger from '@/utils/logger';
-import { getPlaywrightPage } from '@/utils/playwright';
 
 import utils from './utils';
 
@@ -48,6 +47,7 @@ const getCookie = (disableConfig = false) => {
         let waitForRequest = new Promise<string>((resolve) => {
             resolve('');
         });
+        const { getPlaywrightPage } = await import('@/utils/playwright');
         const { destroy } = await getPlaywrightPage('https://space.bilibili.com/1/dynamic', {
             onBeforeLoad: (page) => {
                 waitForRequest = new Promise<string>((resolve) => {
