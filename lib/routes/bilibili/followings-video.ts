@@ -65,18 +65,53 @@ async function handler(ctx) {
     }
     const cards = data.data.cards;
 
-    const out = cards.map((card) => {
-        const card_data = JSON.parse(card.card);
-
-        return {
-            title: card_data.title,
-            description: utils.renderUGCDescription(embed, card_data.pic, card_data.desc, card_data.aid, undefined, card.desc.bvid),
-            image: card_data.pic.replace('http://', 'https://'),
-            pubDate: new Date(card_data.pubdate * 1000).toUTCString(),
-            link: card_data.pubdate > utils.bvidTime && card.desc.bvid ? `https://www.bilibili.com/video/${card.desc.bvid}` : `https://www.bilibili.com/video/av${card_data.aid}`,
-            author: card.desc.user_profile.info.uname,
-        };
-    });
+    const out = await Promise.all(
+        cards.map(async (card) => {
+            const card_data = JSON.parse(card.card);
+    
+            const link =
+                card_data.pubdate > utils.bvidTime && card.desc.bvid
+                    ? `https://www.bilibili.com/video/${card.desc.bvid}`
+                    : `https://www.bilibili.com/video/av${card_data.aid}`;
+    
+            const image = card_data.pic?.replace(/^http:/, 'https:');
+    
+            const baseDescription = utils.renderUGCDescription(
+                embed,
+                image,
+                card_data.desc,
+                card_data.aid,
+                undefined,
+                card.desc.bvid
+            );
+    
+            const commentsHtml = await getVideoComments(
+                card_data.aid,
+                cookie,
+                link,
+                commentLimit
+            );
+    
+            return {
+                title: card_data.title,
+                description: `${baseDescription}${commentsHtml}`,
+    
+                image,
+    
+                media: image
+                    ? {
+                          thumbnail: {
+                              url: image,
+                          },
+                      }
+                    : undefined,
+    
+                pubDate: new Date(card_data.pubdate * 1000).toUTCString(),
+                link,
+                author: card.desc.user_profile.info.uname,
+            };
+        })
+    );
 
     return {
         title: `${name} 关注视频动态`,
