@@ -54,25 +54,56 @@ export const route: Route = {
 :::`,
 };
 
-
 const DEFAULT_COMMENT_LIMIT = 10;
 const MAX_COMMENT_LIMIT = 20;
+const TARGET_NON_VIDEO_ITEMS = 20;
+const MAX_DYNAMIC_PAGES = 20;
+
+const VIDEO_DYNAMIC_TYPES = new Set([8, 16, 32, 512]);
+
+const COMMENT_TYPE_BY_DYNAMIC_TYPE: Record<number, number> = {
+    2: 11,
+    8: 1,
+    16: 5,
+    64: 12,
+    256: 14,
+};
+
+type DynamicCard = {
+    card: string;
+    desc: {
+        dynamic_id?: unknown;
+        dynamic_id_str?: string;
+        rid?: unknown;
+        rid_str?: string;
+        timestamp: number;
+        type?: number;
+        user_profile?: {
+            info: {
+                uname: string;
+            };
+        };
+    };
+    display?: {
+        emoji_info?: {
+            emoji_details: Array<{
+                text: string;
+                url: string;
+            }>;
+        };
+    };
+};
 
 function escapeHtml(text: string) {
-    return text
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#39;');
+    return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
-async function getDynamicComments(
-    dynamicId: string,
-    cookie: string,
-    limit: number
-) {
-    if (!dynamicId || limit <= 0) {
+function isVideoDynamic(item: DynamicCard) {
+    return VIDEO_DYNAMIC_TYPES.has(Number(item.desc?.type));
+}
+
+async function getDynamicComments(oid: string, type: number, dynamicId: string, cookie: string, limit: number) {
+    if (!oid || limit <= 0) {
         return '';
     }
 
@@ -81,9 +112,11 @@ async function getDynamicComments(
             method: 'get',
             url: 'https://api.bilibili.com/x/v2/reply',
             searchParams: {
-                type: '17',
-                oid: dynamicId,
+                type: String(type),
+                oid,
                 sort: '0',
+                pn: '1',
+                ps: String(limit),
             },
             headers: {
                 Referer: `https://t.bilibili.com/${dynamicId}`,
@@ -91,7 +124,13 @@ async function getDynamicComments(
             },
         });
 
-        const replies = response.data?.data?.replies ?? [];
+        if (response.data?.code !== 0) {
+            logger.warn(`[bilibili/followings/dynamic] failed to fetch comments for type ${type}, oid ${oid}: ${response.data?.code} ${response.data?.message}`);
+            return '';
+        }
+
+        const replyData = response.data?.data;
+        const replies = replyData?.replies?.length ? replyData.replies : (replyData?.hots ?? []);
         const selected = replies.slice(0, limit);
 
         if (selected.length === 0) {
@@ -100,12 +139,8 @@ async function getDynamicComments(
 
         const html = selected
             .map((reply, index) => {
-                const username = escapeHtml(
-                    String(reply.member?.uname ?? '匿名')
-                );
-                const message = escapeHtml(
-                    String(reply.content?.message ?? '')
-                ).replaceAll('\n', '<br>');
+                const username = escapeHtml(String(reply.member?.uname ?? '匿名'));
+                const message = escapeHtml(String(reply.content?.message ?? '')).replaceAll('\n', '<br>');
 
                 const likes = Number(reply.like ?? 0);
 
@@ -122,26 +157,16 @@ async function getDynamicComments(
 
         return `<hr><h3>评论（前 ${selected.length} 条）</h3>${html}`;
     } catch (error) {
-        logger.warn(
-            `[bilibili/followings/dynamic] failed to fetch comments for dynamic ${dynamicId}: ${error}`
-        );
+        logger.warn(`[bilibili/followings/dynamic] failed to fetch comments for type ${type}, oid ${oid}: ${error}`);
         return '';
     }
 }
 
 async function handler(ctx) {
     const uid = String(ctx.req.param('uid'));
-    const requestedCommentLimit = Number.parseInt(
-        ctx.req.query('comments') ?? String(DEFAULT_COMMENT_LIMIT),
-        10
-    );
-    
-    const commentLimit = Number.isFinite(requestedCommentLimit)
-        ? Math.min(
-              Math.max(requestedCommentLimit, 0),
-              MAX_COMMENT_LIMIT
-          )
-        : DEFAULT_COMMENT_LIMIT;
+    const requestedCommentLimit = Math.trunc(Number(ctx.req.query('comments') ?? String(DEFAULT_COMMENT_LIMIT)));
+
+    const commentLimit = Number.isFinite(requestedCommentLimit) ? Math.min(Math.max(requestedCommentLimit, 0), MAX_COMMENT_LIMIT) : DEFAULT_COMMENT_LIMIT;
     const routeParams = querystring.parse(ctx.req.param('routeParams'));
 
     const showEmoji = fallback(undefined, queryToBoolean(routeParams.showEmoji), false);
@@ -154,21 +179,72 @@ async function handler(ctx) {
         throw new ConfigNotFoundError('缺少对应 uid 的 Bilibili 用户登录后的 Cookie 值');
     }
 
-    const response = await got({
-        method: 'get',
-        url: `https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/dynamic_new?uid=${uid}&type_list=268435455`,
-        headers: {
-            Referer: `https://space.bilibili.com/${uid}/`,
-            Cookie: cookie,
-        },
-    });
-    if (response.data.code === -6) {
-        throw new ConfigNotFoundError('对应 uid 的 Bilibili 用户的 Cookie 已过期');
+    const getDynamicPage = async (offset = '') => {
+        const isHistoryPage = Boolean(offset);
+        const response = await got({
+            method: 'get',
+            url: `https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/${isHistoryPage ? 'dynamic_history' : 'dynamic_new'}`,
+            searchParams: {
+                uid,
+                type_list: '268435455',
+                ...(isHistoryPage && { offset_dynamic_id: offset }),
+            },
+            headers: {
+                Referer: `https://space.bilibili.com/${uid}/`,
+                Cookie: cookie,
+            },
+        });
+        const body = JSONbig.parse(response.body);
+        if (body.code === -6) {
+            throw new ConfigNotFoundError('对应 uid 的 Bilibili 用户的 Cookie 已过期');
+        }
+        if (body.code === 4_100_000) {
+            throw new ConfigNotFoundError('对应 uid 的 Bilibili 用户 请求失败');
+        }
+        if (body.code !== 0) {
+            throw new Error(`Bilibili dynamic API request failed: ${body.code} ${body.message}`);
+        }
+        return body.data;
+    };
+
+    const data: DynamicCard[] = [];
+    const seenDynamicIds = new Set<string>();
+    const appendNonVideoCards = (cards: DynamicCard[] = []) => {
+        for (const item of cards) {
+            const dynamicId = String(item.desc?.dynamic_id_str ?? item.desc?.dynamic_id ?? '');
+            if (dynamicId && seenDynamicIds.has(dynamicId)) {
+                continue;
+            }
+            if (dynamicId) {
+                seenDynamicIds.add(dynamicId);
+            }
+            if (!isVideoDynamic(item)) {
+                data.push(item);
+            }
+        }
+    };
+
+    let dynamicPage = await getDynamicPage();
+    appendNonVideoCards(dynamicPage.cards);
+
+    let offset = String(dynamicPage.history_offset ?? '');
+    let pageCount = 1;
+    while (data.length < TARGET_NON_VIDEO_ITEMS && offset && pageCount < MAX_DYNAMIC_PAGES) {
+        const previousOffset = offset;
+        // eslint-disable-next-line no-await-in-loop -- the next history cursor comes from the previous page
+        dynamicPage = await getDynamicPage(offset);
+        pageCount++;
+        appendNonVideoCards(dynamicPage.cards);
+
+        offset = String(dynamicPage.next_offset ?? '');
+        if (!dynamicPage.has_more || !offset || offset === previousOffset) {
+            break;
+        }
     }
-    if (response.data.code === 4_100_000) {
-        throw new ConfigNotFoundError('对应 uid 的 Bilibili 用户 请求失败');
+
+    if (data.length < TARGET_NON_VIDEO_ITEMS) {
+        logger.warn(`[bilibili/followings/dynamic] only found ${data.length} non-video dynamics after ${pageCount} page(s)`);
     }
-    const data = JSONbig.parse(response.body).data.cards;
 
     const getTitle = (data) => (data ? data.title || data.description || data.content || (data.vest && data.vest.content) || '' : '');
     const getDes = (data) =>
@@ -219,17 +295,13 @@ async function handler(ctx) {
     };
 
     const items = await Promise.all(
-        data.map(async (item) => {
+        data.slice(0, TARGET_NON_VIDEO_ITEMS).map(async (item) => {
             const parsed = JSONbig.parse(item.card);
             const data = parsed.apiSeasonInfo || (getTitle(parsed.item) ? parsed.item : parsed);
-            const dynamicId = String(
-                item.desc?.dynamic_id ??
-                data.dynamic_id ??
-                ''
-            );
-            const isVideoDynamic =
-            data?.aid !== undefined ||
-            data?.bvid !== undefined;
+            const dynamicId = String(item.desc?.dynamic_id_str ?? item.desc?.dynamic_id ?? data.dynamic_id ?? '');
+            const dynamicType = Number(item.desc?.type);
+            const commentType = COMMENT_TYPE_BY_DYNAMIC_TYPE[dynamicType] ?? 17;
+            const commentOid = String((commentType === 17 ? (item.desc?.dynamic_id_str ?? item.desc?.dynamic_id) : (item.desc?.rid_str ?? item.desc?.rid)) ?? dynamicId);
             let origin = parsed.origin;
             if (origin) {
                 try {
@@ -286,14 +358,8 @@ async function handler(ctx) {
             if (data.image_urls && displayArticle) {
                 data_content = (await cache.getArticleDataFromCvid(data.id, uid)).description;
             }
-            //评论
-            const commentsHTML = !isVideoDynamic
-            ? await getDynamicComments(
-                  dynamicId,
-                  cookie,
-                  commentLimit
-              )
-            : '';
+            // 评论
+            const commentsHTML = await getDynamicComments(commentOid, commentType, dynamicId, cookie, commentLimit);
 
             return {
                 title: getTitle(data),
@@ -311,7 +377,7 @@ async function handler(ctx) {
             };
         })
     );
-    
+
     return {
         title: `${name} 关注的动态`,
         link: 'https://t.bilibili.com',
