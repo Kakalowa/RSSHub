@@ -7,6 +7,63 @@ import logger from '@/utils/logger';
 import cache from './cache';
 import utils from './utils';
 
+const DEFAULT_COMMENT_LIMIT = 10;
+const MAX_COMMENT_LIMIT = 20;
+
+function escapeHtml(text: string) {
+    return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+async function getVideoComments(aid: number, cookie: string, link: string, limit: number) {
+    if (limit <= 0) {
+        return '';
+    }
+
+    try {
+        const response = await got({
+            method: 'get',
+            url: `https://api.bilibili.com/x/v2/reply?type=1&oid=${aid}&sort=0`,
+            headers: {
+                Referer: link,
+                Cookie: cookie,
+            },
+        });
+
+        const replies = response.data?.data?.replies ?? [];
+        const selected = replies.slice(0, limit);
+
+        if (selected.length === 0) {
+            return '<hr><h3>评论</h3><p>暂无评论</p>';
+        }
+
+        const html = selected
+            .map((reply, index) => {
+                const username = escapeHtml(String(reply.member?.uname ?? '匿名'));
+                const message = escapeHtml(String(reply.content?.message ?? '')).replaceAll('\n', '<br>');
+                const likes = Number(reply.like ?? 0);
+
+                return `
+                    <div style="margin: 0.8em 0;">
+                        <b>${index + 1}. ${username}</b>${likes > 0 ? ` · 👍 ${likes}` : ''}
+                        <br>
+                        ${message}
+                    </div>
+                `;
+            })
+            .join('');
+
+        return `<hr><h3>评论（前 ${selected.length} 条）</h3>${html}`;
+    } catch (error) {
+        logger.warn(`[bilibili/followings/video] failed to fetch comments for aid=${aid}: ${error}`);
+        return '';
+    }
+}
+
 export const route: Route = {
     path: '/followings/video/:uid/:embed?',
     categories: ['social-media'],
@@ -40,6 +97,15 @@ export const route: Route = {
 async function handler(ctx) {
     const uid = String(ctx.req.param('uid'));
     const embed = !ctx.req.param('embed');
+
+    const requestedCommentLimit = Number.parseInt(
+        ctx.req.query('comments') ?? String(DEFAULT_COMMENT_LIMIT),
+        10
+    );
+
+    const commentLimit = Number.isFinite(requestedCommentLimit)
+        ? Math.min(Math.max(requestedCommentLimit, 0), MAX_COMMENT_LIMIT)
+        : DEFAULT_COMMENT_LIMIT;
     const name = await cache.getUsernameFromUID(uid);
 
     const cookie = config.bilibili.cookies[uid];
