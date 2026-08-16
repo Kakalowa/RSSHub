@@ -54,8 +54,94 @@ export const route: Route = {
 :::`,
 };
 
+
+const DEFAULT_COMMENT_LIMIT = 10;
+const MAX_COMMENT_LIMIT = 20;
+
+function escapeHtml(text: string) {
+    return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+async function getDynamicComments(
+    dynamicId: string,
+    cookie: string,
+    limit: number
+) {
+    if (!dynamicId || limit <= 0) {
+        return '';
+    }
+
+    try {
+        const response = await got({
+            method: 'get',
+            url: 'https://api.bilibili.com/x/v2/reply',
+            searchParams: {
+                type: '17',
+                oid: dynamicId,
+                sort: '0',
+            },
+            headers: {
+                Referer: `https://t.bilibili.com/${dynamicId}`,
+                Cookie: cookie,
+            },
+        });
+
+        const replies = response.data?.data?.replies ?? [];
+        const selected = replies.slice(0, limit);
+
+        if (selected.length === 0) {
+            return '';
+        }
+
+        const html = selected
+            .map((reply, index) => {
+                const username = escapeHtml(
+                    String(reply.member?.uname ?? '匿名')
+                );
+                const message = escapeHtml(
+                    String(reply.content?.message ?? '')
+                ).replaceAll('\n', '<br>');
+
+                const likes = Number(reply.like ?? 0);
+
+                return `
+                    <div style="margin: 0.8em 0;">
+                        <b>${index + 1}. ${username}</b>
+                        ${likes > 0 ? ` · 👍 ${likes}` : ''}
+                        <br>
+                        ${message}
+                    </div>
+                `;
+            })
+            .join('');
+
+        return `<hr><h3>评论（前 ${selected.length} 条）</h3>${html}`;
+    } catch (error) {
+        logger.warn(
+            `[bilibili/followings/dynamic] failed to fetch comments for dynamic ${dynamicId}: ${error}`
+        );
+        return '';
+    }
+}
+
 async function handler(ctx) {
     const uid = String(ctx.req.param('uid'));
+    const requestedCommentLimit = Number.parseInt(
+        ctx.req.query('comments') ?? String(DEFAULT_COMMENT_LIMIT),
+        10
+    );
+    
+    const commentLimit = Number.isFinite(requestedCommentLimit)
+        ? Math.min(
+              Math.max(requestedCommentLimit, 0),
+              MAX_COMMENT_LIMIT
+          )
+        : DEFAULT_COMMENT_LIMIT;
     const routeParams = querystring.parse(ctx.req.param('routeParams'));
 
     const showEmoji = fallback(undefined, queryToBoolean(routeParams.showEmoji), false);
