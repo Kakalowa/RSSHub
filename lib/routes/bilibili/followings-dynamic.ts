@@ -222,6 +222,14 @@ async function handler(ctx) {
         data.map(async (item) => {
             const parsed = JSONbig.parse(item.card);
             const data = parsed.apiSeasonInfo || (getTitle(parsed.item) ? parsed.item : parsed);
+            const dynamicId = String(
+                item.desc?.dynamic_id ??
+                data.dynamic_id ??
+                ''
+            );
+            const isVideoDynamic =
+            data?.aid !== undefined ||
+            data?.bvid !== undefined;
             let origin = parsed.origin;
             if (origin) {
                 try {
@@ -278,6 +286,14 @@ async function handler(ctx) {
             if (data.image_urls && displayArticle) {
                 data_content = (await cache.getArticleDataFromCvid(data.id, uid)).description;
             }
+            //评论
+            const commentsHTML = !isVideoDynamic
+            ? await getDynamicComments(
+                  dynamicId,
+                  cookie,
+                  commentLimit
+              )
+            : '';
 
             return {
                 title: getTitle(data),
@@ -288,14 +304,14 @@ async function handler(ctx) {
                     const imgHTMLSource = imgHTML ? `<br>${imgHTML}` : '';
                     const videoHTMLSource = videoHTML ? `<br>${videoHTML}` : '';
 
-                    return `${description}${originName}${getIframe(data)}${getIframe(origin)}${imgHTMLSource}${videoHTMLSource}`;
+                    return `${description}${originName}${getIframe(data)}${getIframe(origin)}${imgHTMLSource}${videoHTMLSource}${commentsHTML}`;
                 })(),
                 pubDate: new Date(item.desc?.timestamp * 1000).toUTCString(),
                 link,
             };
         })
     );
-
+    
     return {
         title: `${name} 关注的动态`,
         link: 'https://t.bilibili.com',
