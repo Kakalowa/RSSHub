@@ -89,6 +89,8 @@ async function handler(ctx) {
                 .join(':');
             const des = item.description.replaceAll('\n', '<br/>');
             const img = item.pic.replaceAll(/^\/\//g, 'http://');
+            const parsedCommentTotal = Number(item.review ?? 0);
+            const commentTotal = Number.isFinite(parsedCommentTotal) ? Math.max(0, parsedCommentTotal) : 0;
             return {
                 title: item.title.replaceAll(/<[ /]?em[^>]*>/g, ''),
                 author: item.author,
@@ -105,6 +107,18 @@ async function handler(ctx) {
                 pubDate: parseDate(item.pubdate, 'X'),
                 guid: item.arcurl,
                 link: item.arcurl,
+                _extra: {
+                    bilibiliVideo: {
+                        aid: String(item.aid ?? ''),
+                        bvid: String(item.bvid ?? ''),
+                    },
+                    bilibiliCommentContext: {
+                        oid: String(item.aid ?? ''),
+                        type: 1,
+                        total: commentTotal,
+                        ...(commentTotal > 0 && { nextPage: 1 }),
+                    },
+                },
             };
         }),
     };

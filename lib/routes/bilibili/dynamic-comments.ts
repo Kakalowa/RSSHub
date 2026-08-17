@@ -102,6 +102,7 @@ async function handler(ctx) {
         throw new ConfigNotFoundError('缺少对应 uid 的 Bilibili 用户登录后的 Cookie 值');
     }
 
+    const link = type === '1' ? `https://www.bilibili.com/video/av${oid}` : 'https://t.bilibili.com/';
     const response = await got({
         method: 'get',
         url: root ? 'https://api.bilibili.com/x/v2/reply/reply' : 'https://api.bilibili.com/x/v2/reply',
@@ -113,7 +114,7 @@ async function handler(ctx) {
             ...(root ? { root } : { sort: '0' }),
         },
         headers: {
-            Referer: 'https://t.bilibili.com/',
+            Referer: link,
             Cookie: cookie,
         },
     });
@@ -127,12 +128,10 @@ async function handler(ctx) {
     const total = Math.max(0, Number(data?.page?.count ?? data?.cursor?.all_count ?? replies.length));
     const hasMore = replies.length > 0 && (page * PAGE_SIZE < total || (total === 0 && replies.length === PAGE_SIZE));
     const nextPage = hasMore ? page + 1 : undefined;
-    const link = 'https://t.bilibili.com/';
-
     return {
-        title: root ? `评论 ${root} 的回复` : `动态评论 ${oid}`,
+        title: root ? `评论 ${root} 的回复` : `Bilibili 评论 ${oid}`,
         link,
-        description: root ? 'Bilibili 动态评论的楼中楼回复' : 'Bilibili 动态评论',
+        description: root ? 'Bilibili 评论的楼中楼回复' : 'Bilibili 评论',
         item: replies.map((reply, index) => {
             const comment = serializeComment(reply);
             return {
