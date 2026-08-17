@@ -81,6 +81,7 @@ type DynamicCard = {
         type?: number;
         user_profile?: {
             info: {
+                face?: string;
                 uname: string;
             };
         };
@@ -99,7 +100,7 @@ function escapeHtml(text: string) {
     return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
-function safeImageUrl(value: unknown) {
+function normalizeImageUrl(value: unknown) {
     const raw = String(value ?? '').trim();
     if (!raw) {
         return '';
@@ -110,10 +111,15 @@ function safeImageUrl(value: unknown) {
             return '';
         }
         url.protocol = 'https:';
-        return escapeHtml(url.href);
+        return url.href;
     } catch {
         return '';
     }
+}
+
+function safeImageUrl(value: unknown) {
+    const url = normalizeImageUrl(value);
+    return url ? escapeHtml(url) : '';
 }
 
 function renderCommentMessage(reply) {
@@ -399,8 +405,10 @@ async function handler(ctx) {
             }
             // 作者信息
             let author = '';
+            let authorAvatar = '';
             if (item.desc?.user_profile) {
                 author = item.desc.user_profile.info.uname;
+                authorAvatar = normalizeImageUrl(item.desc.user_profile.info.face);
             }
 
             if (data.image_urls && displayArticle) {
@@ -420,7 +428,7 @@ async function handler(ctx) {
 
             return {
                 title: getTitle(data),
-                author,
+                author: author ? [{ name: author, ...(authorAvatar && { avatar: authorAvatar }) }] : undefined,
                 description: (() => {
                     const description = parsed.new_desc || data_content || getDes(data);
                     const originName = origin && getOriginName(origin) ? `<br><br>//转发自: @${getOriginName(origin)}: ${getOriginTitle(origin.item || origin)}${getDes(origin.item || origin)}` : getOriginDes(origin);
