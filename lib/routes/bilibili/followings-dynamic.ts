@@ -26,6 +26,7 @@ export const route: Route = {
 | useAvid    | 视频链接使用 AV 号 (默认为 BV 号) | 0/1/true/false | false  |
 | directLink | 使用内容直链                      | 0/1/true/false | false  |
 | hideGoods  | 隐藏带货动态                      | 0/1/true/false | false  |
+| includeVideos | 包含视频类动态                 | 0/1/true/false | false  |
 
 用例：\`/bilibili/followings/dynamic/2267573/showEmoji=1&embed=0&useAvid=1\``,
     },
@@ -56,7 +57,7 @@ export const route: Route = {
 
 const DEFAULT_COMMENT_LIMIT = 10;
 const MAX_COMMENT_LIMIT = 20;
-const TARGET_NON_VIDEO_ITEMS = 20;
+const TARGET_ITEMS = 20;
 const MAX_DYNAMIC_PAGES = 20;
 
 const VIDEO_DYNAMIC_TYPES = new Set([8, 16, 32, 512]);
@@ -171,6 +172,7 @@ async function handler(ctx) {
 
     const showEmoji = fallback(undefined, queryToBoolean(routeParams.showEmoji), false);
     const embed = fallback(undefined, queryToBoolean(routeParams.embed), true);
+    const includeVideos = fallback(undefined, queryToBoolean(routeParams.includeVideos), false);
     const displayArticle = fallback(undefined, queryToBoolean(routeParams.displayArticle), false);
 
     const name = await cache.getUsernameFromUID(uid);
@@ -209,7 +211,7 @@ async function handler(ctx) {
 
     const data: DynamicCard[] = [];
     const seenDynamicIds = new Set<string>();
-    const appendNonVideoCards = (cards: DynamicCard[] = []) => {
+    const appendCards = (cards: DynamicCard[] = []) => {
         for (const item of cards) {
             const dynamicId = String(item.desc?.dynamic_id_str ?? item.desc?.dynamic_id ?? '');
             if (dynamicId && seenDynamicIds.has(dynamicId)) {
@@ -218,23 +220,23 @@ async function handler(ctx) {
             if (dynamicId) {
                 seenDynamicIds.add(dynamicId);
             }
-            if (!isVideoDynamic(item)) {
+            if (includeVideos || !isVideoDynamic(item)) {
                 data.push(item);
             }
         }
     };
 
     let dynamicPage = await getDynamicPage();
-    appendNonVideoCards(dynamicPage.cards);
+    appendCards(dynamicPage.cards);
 
     let offset = String(dynamicPage.history_offset ?? '');
     let pageCount = 1;
-    while (data.length < TARGET_NON_VIDEO_ITEMS && offset && pageCount < MAX_DYNAMIC_PAGES) {
+    while (data.length < TARGET_ITEMS && offset && pageCount < MAX_DYNAMIC_PAGES) {
         const previousOffset = offset;
         // eslint-disable-next-line no-await-in-loop -- the next history cursor comes from the previous page
         dynamicPage = await getDynamicPage(offset);
         pageCount++;
-        appendNonVideoCards(dynamicPage.cards);
+        appendCards(dynamicPage.cards);
 
         offset = String(dynamicPage.next_offset ?? '');
         if (!dynamicPage.has_more || !offset || offset === previousOffset) {
@@ -242,8 +244,8 @@ async function handler(ctx) {
         }
     }
 
-    if (data.length < TARGET_NON_VIDEO_ITEMS) {
-        logger.warn(`[bilibili/followings/dynamic] only found ${data.length} non-video dynamics after ${pageCount} page(s)`);
+    if (data.length < TARGET_ITEMS) {
+        logger.warn(`[bilibili/followings/dynamic] only found ${data.length} ${includeVideos ? '' : 'non-video '}dynamics after ${pageCount} page(s)`);
     }
 
     const getTitle = (data) => (data ? data.title || data.description || data.content || (data.vest && data.vest.content) || '' : '');
@@ -295,7 +297,7 @@ async function handler(ctx) {
     };
 
     const items = await Promise.all(
-        data.slice(0, TARGET_NON_VIDEO_ITEMS).map(async (item) => {
+        data.slice(0, TARGET_ITEMS).map(async (item) => {
             const parsed = JSONbig.parse(item.card);
             const data = parsed.apiSeasonInfo || (getTitle(parsed.item) ? parsed.item : parsed);
             const dynamicId = String(item.desc?.dynamic_id_str ?? item.desc?.dynamic_id ?? data.dynamic_id ?? '');
