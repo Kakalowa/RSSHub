@@ -27,6 +27,9 @@ export const route: Route = {
 | directLink | 使用内容直链                      | 0/1/true/false | false  |
 | hideGoods  | 隐藏带货动态                      | 0/1/true/false | false  |
 | includeVideos | 包含视频类动态                 | 0/1/true/false | false  |
+| comments   | 每条动态预加载的评论数            | 0–20          | 10     |
+| targetItems | 本次请求返回的动态数             | 1–60          | 20     |
+| offset     | 历史动态分页游标                  | 数字字符串     | 无     |
 
 用例：\`/bilibili/followings/dynamic/2267573/showEmoji=1&embed=0&useAvid=1\``,
     },
@@ -57,7 +60,8 @@ export const route: Route = {
 
 const DEFAULT_COMMENT_LIMIT = 10;
 const MAX_COMMENT_LIMIT = 20;
-const TARGET_ITEMS = 20;
+const DEFAULT_TARGET_ITEMS = 20;
+const MAX_TARGET_ITEMS = 60;
 const MAX_DYNAMIC_PAGES = 20;
 
 const VIDEO_DYNAMIC_TYPES = new Set([8, 16, 32, 512]);
@@ -208,15 +212,17 @@ async function getDynamicComments(oid: string, type: number, dynamicId: string, 
 
 async function handler(ctx) {
     const uid = String(ctx.req.param('uid'));
-    const requestedCommentLimit = Math.trunc(Number(ctx.req.query('comments') ?? String(DEFAULT_COMMENT_LIMIT)));
-    const requestedOffset = String(ctx.req.query('offset') ?? '').trim();
+    const routeParams = querystring.parse(ctx.req.param('routeParams'));
+    const requestedCommentLimit = Math.trunc(Number(routeParams.comments ?? ctx.req.query('comments') ?? String(DEFAULT_COMMENT_LIMIT)));
+    const requestedTargetItems = Math.trunc(Number(routeParams.targetItems ?? ctx.req.query('targetItems') ?? String(DEFAULT_TARGET_ITEMS)));
+    const requestedOffset = String(routeParams.offset ?? ctx.req.query('offset') ?? '').trim();
 
     if (requestedOffset && !/^\d{1,32}$/.test(requestedOffset)) {
         throw new Error('Invalid Bilibili dynamic offset');
     }
 
     const commentLimit = Number.isFinite(requestedCommentLimit) ? Math.min(Math.max(requestedCommentLimit, 0), MAX_COMMENT_LIMIT) : DEFAULT_COMMENT_LIMIT;
-    const routeParams = querystring.parse(ctx.req.param('routeParams'));
+    const targetItems = Number.isFinite(requestedTargetItems) ? Math.min(Math.max(requestedTargetItems, 1), MAX_TARGET_ITEMS) : DEFAULT_TARGET_ITEMS;
 
     const showEmoji = fallback(undefined, queryToBoolean(routeParams.showEmoji), false);
     const embed = fallback(undefined, queryToBoolean(routeParams.embed), true);
@@ -280,7 +286,7 @@ async function handler(ctx) {
     let offset = String((requestedOffset ? dynamicPage.next_offset : dynamicPage.history_offset) ?? '');
     let hasMore = requestedOffset ? Boolean(dynamicPage.has_more && offset) : Boolean(offset);
     let pageCount = 1;
-    while (data.length < TARGET_ITEMS && hasMore && pageCount < MAX_DYNAMIC_PAGES) {
+    while (data.length < targetItems && hasMore && pageCount < MAX_DYNAMIC_PAGES) {
         const previousOffset = offset;
         // eslint-disable-next-line no-await-in-loop -- the next history cursor comes from the previous page
         dynamicPage = await getDynamicPage(offset);
@@ -294,7 +300,7 @@ async function handler(ctx) {
         }
     }
 
-    if (data.length < TARGET_ITEMS) {
+    if (data.length < targetItems) {
         logger.warn(`[bilibili/followings/dynamic] only found ${data.length} ${includeVideos ? '' : 'non-video '}dynamics after ${pageCount} page(s)`);
     }
 
@@ -347,7 +353,7 @@ async function handler(ctx) {
     };
 
     const nextOffset = hasMore ? offset : '';
-    const selectedData = data.slice(0, TARGET_ITEMS);
+    const selectedData = data.slice(0, targetItems);
     const items = await Promise.all(
         selectedData.map(async (item, index) => {
             const parsed = JSONbig.parse(item.card);
@@ -416,7 +422,7 @@ async function handler(ctx) {
             }
             // 评论
             const comments = await getDynamicComments(commentOid, commentType, dynamicId, cookie, commentLimit);
-            const hasMoreComments = comments.total > comments.selectedCount || (!comments.loaded && commentLimit > 0);
+            const hasMoreComments = commentLimit === 0 || comments.total > comments.selectedCount || (!comments.loaded && commentLimit > 0);
             const commentContext = /^\d+$/.test(commentOid)
                 ? {
                       oid: commentOid,

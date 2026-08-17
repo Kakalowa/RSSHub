@@ -1,16 +1,23 @@
+import querystring from 'node:querystring';
+
 import { config } from '@/config';
 import ConfigNotFoundError from '@/errors/types/config-not-found';
 import type { Route } from '@/types';
 import got from '@/utils/got';
 
 export const route: Route = {
-    path: '/followings/dynamic/comments/:uid/:type/:oid',
+    path: '/followings/dynamic/comments/:uid/:type/:oid/:routeParams?',
     categories: ['social-media'],
     example: '/bilibili/followings/dynamic/comments/2267573/17/123456789',
     parameters: {
         uid: '用于关注动态 Cookie 的用户 id',
         type: 'Bilibili 评论区类型',
         oid: '评论区 oid',
+        routeParams: `
+| 键  | 含义                 | 接受的值   | 默认值 |
+| --- | -------------------- | ---------- | ------ |
+| page | 评论页码            | 1–1000     | 1      |
+| root | 顶层评论 rpid，提供时加载楼中楼 | 数字字符串 | 无 |`,
     },
     features: {
         requireConfig: [
@@ -28,7 +35,7 @@ export const route: Route = {
     name: '关注动态评论分页',
     maintainers: ['TigerCubDen', 'JimenezLi'],
     handler,
-    description: '供关注动态客户端按需加载顶层评论和楼中楼回复。查询参数：`page` 为页码，`root` 为顶层评论 rpid；提供 `root` 时加载该评论的回复。',
+    description: '供关注动态客户端按需加载顶层评论和楼中楼回复。提供 `root` 时加载该评论的回复。',
 };
 
 const PAGE_SIZE = 10;
@@ -81,8 +88,9 @@ async function handler(ctx) {
     const uid = String(ctx.req.param('uid'));
     const type = String(ctx.req.param('type'));
     const oid = String(ctx.req.param('oid'));
-    const root = String(ctx.req.query('root') ?? '').trim();
-    const requestedPage = Math.trunc(Number(ctx.req.query('page') ?? '1'));
+    const routeParams = querystring.parse(ctx.req.param('routeParams'));
+    const root = String(routeParams.root ?? ctx.req.query('root') ?? '').trim();
+    const requestedPage = Math.trunc(Number(routeParams.page ?? ctx.req.query('page') ?? '1'));
     const page = Number.isFinite(requestedPage) ? Math.min(Math.max(requestedPage, 1), 1000) : 1;
 
     if (!/^\d{1,10}$/.test(type) || !/^\d{1,32}$/.test(oid) || (root && !/^\d{1,32}$/.test(root))) {
