@@ -99,13 +99,48 @@ function escapeHtml(text: string) {
     return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
+function safeImageUrl(value: unknown) {
+    const raw = String(value ?? '').trim();
+    if (!raw) {
+        return '';
+    }
+    try {
+        const url = new URL(raw.startsWith('//') ? `https:${raw}` : raw);
+        if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+            return '';
+        }
+        url.protocol = 'https:';
+        return escapeHtml(url.href);
+    } catch {
+        return '';
+    }
+}
+
+function renderCommentMessage(reply) {
+    let message = escapeHtml(String(reply.content?.message ?? ''));
+    const emotes = reply.content?.emote;
+    if (emotes && typeof emotes === 'object') {
+        for (const [token, emote] of Object.entries(emotes)) {
+            const data = emote as { gif_url?: unknown; meta?: { size?: unknown }; url?: unknown };
+            const url = safeImageUrl(data.gif_url || data.url);
+            if (!url) {
+                continue;
+            }
+            const escapedToken = escapeHtml(token);
+            const size = Number(data.meta?.size) === 2 ? 'large' : 'inline';
+            message = message.replaceAll(escapedToken, () => `<img alt="${escapedToken}" data-bilibili-emote="${size}" src="${url}">`);
+        }
+    }
+    return message.replaceAll('\n', '<br>');
+}
+
 function isVideoDynamic(item: DynamicCard) {
     return VIDEO_DYNAMIC_TYPES.has(Number(item.desc?.type));
 }
 
 async function getDynamicComments(oid: string, type: number, dynamicId: string, cookie: string, limit: number) {
     if (!oid || limit <= 0) {
-        return '';
+        return { html: '', loaded: true, selectedCount: 0, total: 0 };
     }
 
     try {
@@ -127,26 +162,28 @@ async function getDynamicComments(oid: string, type: number, dynamicId: string, 
 
         if (response.data?.code !== 0) {
             logger.warn(`[bilibili/followings/dynamic] failed to fetch comments for type ${type}, oid ${oid}: ${response.data?.code} ${response.data?.message}`);
-            return '';
+            return { html: '', loaded: false, selectedCount: 0, total: 0 };
         }
 
         const replyData = response.data?.data;
         const replies = replyData?.replies?.length ? replyData.replies : (replyData?.hots ?? []);
         const selected = replies.slice(0, limit);
+        const total = Number(replyData?.page?.count ?? replyData?.cursor?.all_count ?? selected.length);
 
         if (selected.length === 0) {
-            return '';
+            return { html: '', loaded: true, selectedCount: 0, total };
         }
 
         const html = selected
             .map((reply, index) => {
                 const username = escapeHtml(String(reply.member?.uname ?? '匿名'));
-                const message = escapeHtml(String(reply.content?.message ?? '')).replaceAll('\n', '<br>');
-
+                const message = renderCommentMessage(reply);
                 const likes = Number(reply.like ?? 0);
+                const commentId = String(reply.rpid_str ?? reply.rpid ?? '');
+                const replyCount = Math.max(0, Number(reply.rcount ?? 0));
 
                 return `
-                    <div style="margin: 0.8em 0;">
+                    <div data-bilibili-comment-id="${escapeHtml(commentId)}" data-bilibili-reply-count="${replyCount}" style="margin: 0.8em 0;">
                         <b>${index + 1}. ${username}</b>
                         ${likes > 0 ? ` · 👍 ${likes}` : ''}
                         <br>
@@ -156,16 +193,21 @@ async function getDynamicComments(oid: string, type: number, dynamicId: string, 
             })
             .join('');
 
-        return `<hr><h3>评论（前 ${selected.length} 条）</h3>${html}`;
+        return { html: `<hr><h3>评论（前 ${selected.length} 条）</h3>${html}`, loaded: true, selectedCount: selected.length, total };
     } catch (error) {
         logger.warn(`[bilibili/followings/dynamic] failed to fetch comments for type ${type}, oid ${oid}: ${error}`);
-        return '';
+        return { html: '', loaded: false, selectedCount: 0, total: 0 };
     }
 }
 
 async function handler(ctx) {
     const uid = String(ctx.req.param('uid'));
     const requestedCommentLimit = Math.trunc(Number(ctx.req.query('comments') ?? String(DEFAULT_COMMENT_LIMIT)));
+    const requestedOffset = String(ctx.req.query('offset') ?? '').trim();
+
+    if (requestedOffset && !/^\d{1,32}$/.test(requestedOffset)) {
+        throw new Error('Invalid Bilibili dynamic offset');
+    }
 
     const commentLimit = Number.isFinite(requestedCommentLimit) ? Math.min(Math.max(requestedCommentLimit, 0), MAX_COMMENT_LIMIT) : DEFAULT_COMMENT_LIMIT;
     const routeParams = querystring.parse(ctx.req.param('routeParams'));
@@ -226,12 +268,13 @@ async function handler(ctx) {
         }
     };
 
-    let dynamicPage = await getDynamicPage();
+    let dynamicPage = await getDynamicPage(requestedOffset);
     appendCards(dynamicPage.cards);
 
-    let offset = String(dynamicPage.history_offset ?? '');
+    let offset = String((requestedOffset ? dynamicPage.next_offset : dynamicPage.history_offset) ?? '');
+    let hasMore = requestedOffset ? Boolean(dynamicPage.has_more && offset) : Boolean(offset);
     let pageCount = 1;
-    while (data.length < TARGET_ITEMS && offset && pageCount < MAX_DYNAMIC_PAGES) {
+    while (data.length < TARGET_ITEMS && hasMore && pageCount < MAX_DYNAMIC_PAGES) {
         const previousOffset = offset;
         // eslint-disable-next-line no-await-in-loop -- the next history cursor comes from the previous page
         dynamicPage = await getDynamicPage(offset);
@@ -239,7 +282,8 @@ async function handler(ctx) {
         appendCards(dynamicPage.cards);
 
         offset = String(dynamicPage.next_offset ?? '');
-        if (!dynamicPage.has_more || !offset || offset === previousOffset) {
+        hasMore = Boolean(dynamicPage.has_more && offset && offset !== previousOffset);
+        if (!hasMore) {
             break;
         }
     }
@@ -296,8 +340,10 @@ async function handler(ctx) {
         return imgs;
     };
 
+    const nextOffset = hasMore ? offset : '';
+    const selectedData = data.slice(0, TARGET_ITEMS);
     const items = await Promise.all(
-        data.slice(0, TARGET_ITEMS).map(async (item) => {
+        selectedData.map(async (item, index) => {
             const parsed = JSONbig.parse(item.card);
             const data = parsed.apiSeasonInfo || (getTitle(parsed.item) ? parsed.item : parsed);
             const dynamicId = String(item.desc?.dynamic_id_str ?? item.desc?.dynamic_id ?? data.dynamic_id ?? '');
@@ -361,7 +407,16 @@ async function handler(ctx) {
                 data_content = (await cache.getArticleDataFromCvid(data.id, uid)).description;
             }
             // 评论
-            const commentsHTML = await getDynamicComments(commentOid, commentType, dynamicId, cookie, commentLimit);
+            const comments = await getDynamicComments(commentOid, commentType, dynamicId, cookie, commentLimit);
+            const hasMoreComments = comments.total > comments.selectedCount || (!comments.loaded && commentLimit > 0);
+            const commentContext = /^\d+$/.test(commentOid)
+                ? {
+                      oid: commentOid,
+                      type: commentType,
+                      total: comments.total,
+                      ...(hasMoreComments && { nextPage: comments.selectedCount > 0 ? 2 : 1 }),
+                  }
+                : undefined;
 
             return {
                 title: getTitle(data),
@@ -372,10 +427,16 @@ async function handler(ctx) {
                     const imgHTMLSource = imgHTML ? `<br>${imgHTML}` : '';
                     const videoHTMLSource = videoHTML ? `<br>${videoHTML}` : '';
 
-                    return `${description}${originName}${getIframe(data)}${getIframe(origin)}${imgHTMLSource}${videoHTMLSource}${commentsHTML}`;
+                    return `${description}${originName}${getIframe(data)}${getIframe(origin)}${imgHTMLSource}${videoHTMLSource}${comments.html}`;
                 })(),
                 pubDate: new Date(item.desc?.timestamp * 1000).toUTCString(),
                 link,
+                ...((commentContext || (index === selectedData.length - 1 && nextOffset)) && {
+                    _extra: {
+                        ...(commentContext && { bilibiliCommentContext: commentContext }),
+                        ...(index === selectedData.length - 1 && nextOffset && { bilibiliNextOffset: nextOffset }),
+                    },
+                }),
             };
         })
     );
